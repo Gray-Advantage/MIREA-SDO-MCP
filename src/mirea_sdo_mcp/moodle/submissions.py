@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..client import SdoClient, SdoError
-from . import html
+from . import courses, html
 from .index import index
 
 #: Поле формы, в котором лежит идентификатор черновичной области.
@@ -64,6 +64,11 @@ async def get_submission_form(client: SdoClient, cmid: int) -> dict[str, Any]:
     if not draft:
         raise SubmissionClosed(f"У задания «{info['name']}» не нашлась черновичная область.")
 
+    form_max_bytes = _int_option(page, "maxbytes") or 0
+    effective, limit_source = await _resolve_max_bytes(
+        client, info["course_id"], form_max_bytes
+    )
+
     return {
         "cmid": cmid,
         "name": info["name"],
@@ -72,10 +77,32 @@ async def get_submission_form(client: SdoClient, cmid: int) -> dict[str, Any]:
         "sesskey": fields.get("sesskey") or await client.get_sesskey(),
         "fields": fields,
         "upload_repo_id": _upload_repo_id(page),
-        "max_bytes": _int_option(page, "maxbytes"),
+        "max_bytes": form_max_bytes,
+        "effective_max_bytes": effective,
+        "max_bytes_source": limit_source,
         "max_files": _int_option(page, "maxfiles"),
         "already_attached": _int_option(page, "filecount") or 0,
     }
+
+
+async def _resolve_max_bytes(
+    client: SdoClient, course_id: int, form_max_bytes: int
+) -> tuple[int, str]:
+    """Определяет реально действующий предел размера файла.
+
+    Moodle пишет в форму 0, когда у задания своего предела нет — тогда
+    действует лимит курса. Спрашиваем его у СДО, а не подставляем догадку.
+    """
+    if form_max_bytes > 0:
+        return form_max_bytes, "задание"
+    try:
+        state = await courses.get_course_state(client, course_id)
+    except SdoError:
+        return 0, "неизвестно"
+    course_max = int(state.get("course", {}).get("maxbytes") or 0)
+    if course_max > 0:
+        return course_max, "курс"
+    return 0, "неизвестно"
 
 
 def _upload_repo_id(page: str) -> int:
@@ -95,7 +122,7 @@ async def stage_files(
 ) -> dict[str, Any]:
     """Загружает файлы в черновичную область задания. Ответ при этом НЕ сдаётся."""
     form = await get_submission_form(client, cmid)
-    limit_bytes = form["max_bytes"] or 0
+    limit_bytes = form["effective_max_bytes"] or 0
     limit_files = form["max_files"] or 0
 
     prepared: list[Path] = []
@@ -105,8 +132,9 @@ async def stage_files(
             raise SdoError(f"Файл не найден: {path}")
         if limit_bytes and path.stat().st_size > limit_bytes:
             raise SdoError(
-                f"«{path.name}» весит {path.stat().st_size} Б, "
-                f"а задание принимает не больше {limit_bytes} Б."
+                f"«{path.name}» весит {path.stat().st_size / 1048576:.1f} МБ, "
+                f"а предел ({form['max_bytes_source']}) — "
+                f"{limit_bytes / 1048576:.1f} МБ."
             )
         prepared.append(path)
 
@@ -157,6 +185,7 @@ async def stage_files(
         "staged_count": len(uploaded),
         "max_files": limit_files,
         "max_bytes": limit_bytes,
+        "max_bytes_source": form["max_bytes_source"],
         "submitted": False,
         "next_step": (
             "Файлы лежат в черновичной области и НЕ сданы. Чтобы сдать, вызови "
