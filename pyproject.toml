@@ -1,6 +1,6 @@
 [project]
 name = "mirea-sdo-mcp"
-version = "0.2.1"
+version = "0.2.2"
 description = "MCP-сервер для СДО РТУ МИРЭА (Moodle): дисциплины, материалы, файлы, задания и оценки — только на чтение"
 readme = "README.md"
 license = "MIT"

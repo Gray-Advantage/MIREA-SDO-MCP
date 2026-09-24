@@ -52,4 +52,4 @@ class TestSafety:
         result = await submissions.submit(client=None, cmid=1, confirm=False)
         assert result["submitted"] is False
         assert result["error"] == "confirmation_required"
-        assert "необратим" in result["message"]
+        assert "confirm=true" in result["message"]

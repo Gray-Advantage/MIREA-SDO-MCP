@@ -99,9 +99,28 @@ async def get_assignment(client: SdoClient, cmid: int) -> dict[str, Any]:
         "url": f"/mod/assign/view.php?id={int(cmid)}",
         "description": description,
         "status": status,
+        "attachments": _links_of(soup, "introattachment"),
+        "submitted_files": _links_of(soup, "assignsubmission_file"),
         "files": _pluginfile_links(soup),
+        "can_edit_submission": _has_action(soup, "editsubmission"),
+        "can_remove_submission": _has_action(soup, "removesubmissionconfirm"),
         "text": html.text_of(html.strip_noise(main)) if main is not None else "",
     }
+
+
+def _links_of(soup: Any, marker: str) -> list[dict[str, Any]]:
+    """Ссылки на файлы одного вида: условие задания или собственно ответ."""
+    return [f for f in _pluginfile_links(soup) if marker in f["url"]]
+
+
+def _has_action(soup: Any, action: str) -> bool:
+    """Есть ли на странице действие — ссылкой или скрытым полем формы.
+
+    Moodle отдаёт кнопки отката формами, а не ссылками, поэтому проверяем оба.
+    """
+    if soup.select_one(f'a[href*="action={action}"]'):
+        return True
+    return bool(soup.select_one(f'input[name="action"][value="{action}"]'))
 
 
 async def get_deadlines(client: SdoClient, days: int = 30, limit: int = 50) -> list[dict[str, Any]]:
