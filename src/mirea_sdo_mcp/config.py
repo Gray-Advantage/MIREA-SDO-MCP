@@ -46,8 +46,16 @@ CACHE_DIR = STATE_DIR / "cache"
 
 #: Откуда сервер берёт обновления. Формат «владелец/репозиторий».
 UPDATE_REPO = os.environ.get("SDO_UPDATE_REPO", "Gray-Advantage/MIREA-SDO-MCP")
-UPDATE_CHECK_TTL = float(os.environ.get("SDO_UPDATE_CHECK_TTL", str(6 * 3600)))
+UPDATE_CHECK_TTL = float(os.environ.get("SDO_UPDATE_CHECK_TTL", "900"))
 UPDATE_CACHE_FILE = STATE_DIR / "update-check.json"
 
 #: Проверку версии при старте можно выключить: SDO_UPDATE_CHECK=0
 UPDATE_CHECK_ENABLED = os.environ.get("SDO_UPDATE_CHECK", "1") not in {"0", "false", "no"}
+
+#: Системные браузеры, которые пробуем до скачивания собственного Chromium.
+#: Пустое значение SDO_BROWSER_CHANNELS отключает этот путь.
+BROWSER_CHANNELS = tuple(
+    c.strip()
+    for c in os.environ.get("SDO_BROWSER_CHANNELS", "chrome,msedge").split(",")
+    if c.strip()
+)

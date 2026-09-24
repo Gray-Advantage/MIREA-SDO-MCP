@@ -18,7 +18,16 @@ from mcp.types import ToolAnnotations
 
 from . import auth, config, reader, updater
 from .client import SdoClient, SdoError
-from .moodle import assignments, courses, files, forums, grades, modules, quizzes
+from .moodle import (
+    assignments,
+    courses,
+    files,
+    forums,
+    grades,
+    modules,
+    quizzes,
+    submissions,
+)
 from .moodle.index import index
 
 # По stdio идёт протокол MCP, поэтому болтливость HTTP-клиента здесь лишняя.
@@ -46,15 +55,34 @@ mcp = MCPServer(
         "структура, файлы, задания, оценки, тесты и форумы. Ничего не "
         "отправляет и не сдаёт. Если инструмент вернул error=session_expired, "
         "вызови sdo_login — откроется окно браузера для входа через SSO. "
-        "Раз в сессию полезно вызвать sdo_check_updates; если он говорит "
-        "update_available, предложи пользователю sdo_update."
+        "Если в ответе инструмента появилось поле _update — вышла новая версия "
+        "сервера; скажи об этом пользователю и предложи sdo_update. "
+        "Исключение из «только чтение» — отправка заданий: "
+        "stage_assignment_files кладёт файлы в черновик (обратимо, ничего не "
+        "сдаёт), а submit_assignment сдаёт работу на проверку необратимо и "
+        "только с confirm=true. Перед submit_assignment обязательно спроси "
+        "разрешения у пользователя."
     ),
 )
 client = SdoClient()
 
 
+def _decorate_result(result: Any) -> Any:
+    """Приводит списки к единой форме и подмешивает весть о новой версии."""
+    if isinstance(result, list):
+        result = {"count": len(result), "items": result}
+    if isinstance(result, dict):
+        update = updater.notice()
+        if update:
+            result = {**result, "_update": update}
+    return result
+
+
 def tool(
-    fn: Callable[..., Awaitable[Any]] | None = None, *, writes: bool = False
+    fn: Callable[..., Awaitable[Any]] | None = None,
+    *,
+    writes: bool = False,
+    destructive: bool = False,
 ) -> Any:
     """Регистрирует инструмент и превращает наши исключения в понятный текст.
 
@@ -66,16 +94,21 @@ def tool(
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
-                return await func(*args, **kwargs)
+                result = await func(*args, **kwargs)
             except auth.SessionExpired as exc:
-                return {"error": "session_expired", "message": str(exc)}
+                result = {"error": "session_expired", "message": str(exc)}
             except SdoError as exc:
-                return {"error": "sdo_error", "message": str(exc)}
+                result = {"error": "sdo_error", "message": str(exc)}
             except Exception as exc:  # pragma: no cover - страховка
-                return {"error": type(exc).__name__, "message": str(exc)}
+                result = {"error": type(exc).__name__, "message": str(exc)}
+
+            updater.maybe_refresh()
+            return _decorate_result(result)
 
         annotations = ToolAnnotations(
-            read_only_hint=not writes, destructive_hint=False, open_world_hint=True
+            read_only_hint=not writes,
+            destructive_hint=destructive,
+            open_world_hint=True,
         )
         return mcp.tool(annotations=annotations)(wrapper)
 
@@ -173,7 +206,7 @@ async def list_courses(
     classification: str = "all",
     search: str | None = None,
     include_hidden: bool = True,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Список дисциплин пользователя.
 
     classification: all, inprogress, future, past, favourites, hidden.
@@ -192,7 +225,7 @@ async def get_course(course_id: int) -> dict[str, Any]:
 @tool
 async def search_activities(
     query: str, course_id: int | None = None, module_type: str | None = None
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Найти элементы курсов по части названия.
 
     module_type ограничивает тип: folder, resource, assign, quiz, forum, page, url.
@@ -294,7 +327,7 @@ async def download_course(
 
 
 @tool
-async def list_assignments(course_id: int | None = None) -> list[dict[str, Any]]:
+async def list_assignments(course_id: int | None = None) -> dict[str, Any]:
     """Задания со сроками и состоянием ответа. Без course_id — по всем курсам."""
     if course_id is None:
         return await assignments.list_all_assignments(client)
@@ -308,16 +341,51 @@ async def get_assignment(cmid: int) -> dict[str, Any]:
 
 
 @tool
-async def get_deadlines(days: int = 30, limit: int = 50) -> list[dict[str, Any]]:
+async def get_deadlines(days: int = 30, limit: int = 50) -> dict[str, Any]:
     """Ближайшие дедлайны по всем дисциплинам на указанное число дней вперёд."""
     return await assignments.get_deadlines(client, days, limit)
+
+
+# --- отправка заданий --------------------------------------------------
+
+
+@tool
+async def get_submission_form(cmid: int) -> dict[str, Any]:
+    """Что задание принимает: лимит размера, число файлов, id черновичной области.
+
+    Только читает форму. Ничего не загружает и не сдаёт.
+    """
+    return await submissions.get_submission_form(client, cmid)
+
+
+@tool(writes=True)
+async def stage_assignment_files(cmid: int, paths: list[str]) -> dict[str, Any]:
+    """Загрузить файлы в черновичную область задания. Ответ при этом НЕ сдаётся.
+
+    Обратимо и никому не видно: пока не вызван submit_assignment, работа не
+    отправлена. Возвращает draft_itemid — его нужно передать в submit_assignment.
+    """
+    return await submissions.stage_files(client, cmid, paths)
+
+
+@tool(writes=True, destructive=True)
+async def submit_assignment(
+    cmid: int, draft_itemid: int | None = None, confirm: bool = False
+) -> dict[str, Any]:
+    """Сдать ответ на проверку. НЕОБРАТИМО.
+
+    В этой настройке Moodle стадии черновика нет: сохранение сразу отправляет
+    работу преподавателю. Без confirm=true ничего не делает. Перед вызовом
+    обязательно спроси разрешения у пользователя.
+    """
+    return await submissions.submit(client, cmid, draft_itemid, confirm)
 
 
 # --- оценки ------------------------------------------------------------
 
 
 @tool
-async def get_grades_overview() -> list[dict[str, Any]]:
+async def get_grades_overview() -> dict[str, Any]:
     """Итоговая оценка по каждой дисциплине."""
     return await grades.get_grades_overview(client)
 
@@ -332,7 +400,7 @@ async def get_course_grades(course_id: int) -> dict[str, Any]:
 
 
 @tool
-async def list_quizzes(course_id: int) -> list[dict[str, Any]]:
+async def list_quizzes(course_id: int) -> dict[str, Any]:
     """Тесты дисциплины со сроками закрытия и оценками."""
     return await quizzes.list_quizzes(client, course_id)
 

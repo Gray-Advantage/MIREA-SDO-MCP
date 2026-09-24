@@ -143,6 +143,51 @@ def last_check() -> dict[str, Any] | None:
     return _last_check
 
 
+def notice() -> dict[str, Any] | None:
+    """Короткая врезка для ответа инструмента, если вышла новая версия."""
+    check = _last_check
+    if not check or not check.get("update_available"):
+        return None
+    return {
+        "message": (
+            f"Вышла новая версия MCP-сервера СДО: {check.get('latest_version')} "
+            f"(сейчас {check.get('current_version')}). Предложи пользователю обновиться — "
+            "или, если он не против, вызови sdo_update сам. Куки и профиль браузера "
+            "при обновлении не теряются."
+        ),
+        "current_version": check.get("current_version"),
+        "latest_version": check.get("latest_version"),
+        "release_url": check.get("release_url"),
+        "how_to_update": "sdo_update",
+    }
+
+
+_refresh_task: "asyncio.Task[None] | None" = None
+
+
+def maybe_refresh() -> None:
+    """Освежает вердикт в фоне, если он устарел.
+
+    Дёргать GitHub на каждый вызов инструмента нельзя: это добавило бы задержку
+    каждому вызову и упёрлось бы в лимит 60 запросов в час. Поэтому запросы
+    идут фоном не чаще раза в UPDATE_CHECK_TTL, а инструменты отдают последний
+    известный вердикт.
+    """
+    global _refresh_task
+
+    if not config.UPDATE_CHECK_ENABLED:
+        return
+    if _refresh_task is not None and not _refresh_task.done():
+        return
+    if _last_check and (time.time() - _last_check.get("checked_at", 0)) < config.UPDATE_CHECK_TTL:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _refresh_task = loop.create_task(check_in_background())
+
+
 async def check_in_background() -> None:
     """Тихая проверка при старте: молчит при любой ошибке."""
     if not config.UPDATE_CHECK_ENABLED:

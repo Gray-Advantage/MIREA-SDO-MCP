@@ -110,30 +110,44 @@ async def login_interactive(timeout_sec: float = 300.0) -> Session:
 
     async with async_playwright() as pw:
 
-        async def launch() -> Any:
-            return await pw.chromium.launch_persistent_context(
-                user_data_dir=str(config.BROWSER_PROFILE_DIR),
-                headless=False,
-                viewport={"width": 1280, "height": 900},
-                user_agent=config.USER_AGENT,
-                args=["--no-first-run", "--no-default-browser-check"],
-            )
+        async def launch(channel: str | None) -> Any:
+            options: dict[str, Any] = {
+                "user_data_dir": str(config.BROWSER_PROFILE_DIR),
+                "headless": False,
+                "viewport": {"width": 1280, "height": 900},
+                "user_agent": config.USER_AGENT,
+                "args": ["--no-first-run", "--no-default-browser-check"],
+            }
+            if channel:
+                options["channel"] = channel
+            return await pw.chromium.launch_persistent_context(**options)
 
-        try:
-            ctx = await launch()
-        except Exception as exc:
-            if not _looks_like_missing_browser(exc):
-                raise AuthError(f"Не удалось запустить Chromium: {exc}") from exc
-            # Первый запуск после установки: браузера ещё нет, качаем сами.
-            await asyncio.to_thread(_install_chromium)
+        ctx = None
+        # Сначала пробуем браузер, который уже стоит у пользователя: так не нужно
+        # качать отдельный Chromium на сотни мегабайт.
+        for channel in config.BROWSER_CHANNELS:
             try:
-                ctx = await launch()
-            except Exception as retry_exc:
-                raise AuthError(
-                    "Не удалось запустить Chromium даже после установки. "
-                    "Попробуй вручную: uv tool run --from mirea-sdo-mcp playwright install chromium\n"
-                    f"Ошибка: {retry_exc}"
-                ) from retry_exc
+                ctx = await launch(channel)
+                break
+            except Exception:
+                continue
+
+        if ctx is None:
+            try:
+                ctx = await launch(None)
+            except Exception as exc:
+                if not _looks_like_missing_browser(exc):
+                    raise AuthError(f"Не удалось запустить браузер для входа: {exc}") from exc
+                # Ни системного браузера, ни скачанного — качаем Chromium сами.
+                await asyncio.to_thread(_install_chromium)
+                try:
+                    ctx = await launch(None)
+                except Exception as retry_exc:
+                    raise AuthError(
+                        "Не удалось запустить браузер даже после установки Chromium. "
+                        "Попробуй вручную: uv tool run --from mirea-sdo-mcp playwright install chromium\n"
+                        f"Ошибка: {retry_exc}"
+                    ) from retry_exc
 
         try:
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()

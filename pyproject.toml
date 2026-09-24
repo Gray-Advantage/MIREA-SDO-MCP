@@ -1,6 +1,6 @@
 [project]
 name = "mirea-sdo-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP-сервер для СДО РТУ МИРЭА (Moodle): дисциплины, материалы, файлы, задания и оценки — только на чтение"
 readme = "README.md"
 license = "MIT"
@@ -31,4 +31,9 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

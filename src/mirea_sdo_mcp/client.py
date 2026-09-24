@@ -100,6 +100,9 @@ class SdoClient:
             await self._throttle()
             try:
                 resp = await http.request(method, url, **kwargs)
+            except httpx.TooManyRedirects as exc:
+                # Протухшая кука заставляет /login/index.php редиректить сам на себя.
+                raise SessionExpired(_RELOGIN_HINT) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last = exc
                 if attempt + 1 < _RETRIES:
